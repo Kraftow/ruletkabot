@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<title>Рулетка</title>
+<style>
+  :root { --bg:#0b0b1e; --cyan:#19d3c5; --pink:#ff2fa0; --text:#fff; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:radial-gradient(circle at 50% 0%, #26146b, var(--bg) 60%);
+         color:var(--text); font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+         display:flex; flex-direction:column; align-items:center; padding:24px 16px; }
+  h1 { font-size:22px; text-align:center; margin:8px 0 20px; font-weight:600; }
+  .wrap { position:relative; width:min(86vw,360px); aspect-ratio:1; }
+  .pointer { position:absolute; top:-10px; left:50%; transform:translateX(-50%); z-index:2;
+             width:0; height:0; border-left:14px solid transparent; border-right:14px solid transparent;
+             border-top:28px solid var(--cyan); filter:drop-shadow(0 0 8px var(--cyan)); }
+  canvas { width:100%; height:100%; border-radius:50%; box-shadow:0 0 30px #7a3cff88, 0 0 0 4px #ffffff22;
+           transition:transform 5s cubic-bezier(.12,.7,.1,1); }
+  button { margin-top:28px; width:100%; max-width:360px; padding:16px; font-size:18px; font-weight:700;
+           color:#fff; border:2px solid var(--cyan); border-radius:14px;
+           background:linear-gradient(90deg,#2b6b62,#111); }
+  button:disabled { opacity:.55; }
+  #timer { margin-top:14px; font-variant-numeric:tabular-nums; opacity:.85; min-height:22px; }
+  #result { margin-top:10px; font-size:20px; font-weight:700; text-align:center; min-height:56px; }
+  .tabs { display:flex; width:100%; max-width:360px; margin-top:26px; background:#ffffff0d; border-radius:12px; padding:4px; }
+  .tabs div { flex:1; text-align:center; padding:10px 4px; border-radius:9px; font-size:15px; opacity:.7; }
+  .tabs div.on { background:#1a1d2e; opacity:1; border-bottom:2px solid var(--cyan); }
+  #history { width:100%; max-width:360px; margin-top:14px; display:none; }
+  .row { display:flex; align-items:center; gap:12px; padding:10px 12px; margin-bottom:8px; background:#ffffff0d; border-radius:12px; }
+  .row img { width:40px; height:40px; }
+  .row small { display:block; opacity:.6; margin-top:2px; }
+  #resimg { width:96px; height:96px; display:none; margin:6px auto 0; }
+</style>
+</head>
+<body>
+<h1>Воу! Рулетка для своїх готова!</h1>
+<div class="wrap"><div class="pointer"></div><canvas id="wheel" width="720" height="720"></canvas></div>
+<button id="btn" disabled>Крутить</button>
+<div id="timer"></div>
+<img id="resimg" alt="">
+<div id="result"></div>
+<div class="tabs"><div id="t1" class="on">Призи</div><div id="t2">Історія бонусів</div></div>
+<div id="history"></div>
+
+<script>
+const tg = Telegram.WebApp; tg.ready(); tg.expand();
+const COLORS = ["#1f8a5b", "#8a1f4f", "#c9a21a", "#3b3b6b"];
+const btn = document.getElementById("btn"), timerEl = document.getElementById("timer"),
+      resEl = document.getElementById("result"), canvas = document.getElementById("wheel");
+let prizes = [], rotation = 0, left = 0, tick = null;
+
+async function api(path) {
+  const r = await fetch(path, { method:"POST", headers:{"Content-Type":"application/json"},
+                                body: JSON.stringify({ initData: tg.initData }) });
+  return { status:r.status, data: await r.json() };
+}
+
+function draw() {
+  const ctx = canvas.getContext("2d"), c = canvas.width/2, n = prizes.length, a = 2*Math.PI/n;
+  prizes.forEach((p,i) => {
+    const s = -Math.PI/2 + i*a;                 // сегмент 0 начинается сверху по часовой
+    ctx.beginPath(); ctx.moveTo(c,c); ctx.arc(c,c,c-4,s,s+a); ctx.closePath();
+    ctx.fillStyle = COLORS[i % COLORS.length]; ctx.fill();
+    ctx.strokeStyle = "#ffffff55"; ctx.lineWidth = 3; ctx.stroke();
+    ctx.save(); ctx.translate(c,c); ctx.rotate(s + a/2);
+    ctx.textAlign = "right"; ctx.fillStyle = "#fff";
+    if (p.im && p.im.complete) ctx.drawImage(p.im, c-30-110, -75, 110, 110);
+    ctx.font = "bold 24px sans-serif"; ctx.fillText(p.name.length>16 ? p.name.slice(0,15)+"…" : p.name, c-30, 62);
+    ctx.restore();
+  });
+}
+
+function startTimer() {
+  clearInterval(tick);
+  const render = () => {
+    if (left <= 0) { btn.disabled = false; timerEl.textContent = ""; clearInterval(tick); return; }
+    btn.disabled = true;
+    const h = String(Math.floor(left/3600)).padStart(2,"0"), m = String(Math.floor(left%3600/60)).padStart(2,"0"),
+          s = String(left%60).padStart(2,"0");
+    timerEl.textContent = `Следующая попытка через ${h}:${m}:${s}`; left--;
+  };
+  render(); tick = setInterval(render, 1000);
+}
+
+async function init() {
+  const { data } = await api("/api/status");
+  prizes = data.prizes; left = data.left;
+  await Promise.all(prizes.map(p => new Promise(r => { p.im = new Image(); p.im.onload = p.im.onerror = r; p.im.src = p.img; })));
+  draw();
+  left > 0 ? startTimer() : (btn.disabled = false);
+}
+
+btn.onclick = async () => {
+  btn.disabled = true; resEl.textContent = ""; document.getElementById("resimg").style.display = "none";
+  const { status, data } = await api("/api/spin");
+  if (status === 429) { left = data.left; startTimer(); return; }
+  if (status !== 200) { resEl.textContent = "Ошибка, попробуйте позже"; btn.disabled = false; return; }
+  const seg = 360/prizes.length, jitter = (Math.random()-.5)*seg*.7;
+  rotation += 360*6 + (360 - (rotation % 360)) - (data.index*seg + seg/2) + jitter;
+  canvas.style.transform = `rotate(${rotation}deg)`;
+  setTimeout(() => {
+    resEl.textContent = `🎉 Вы выиграли: ${data.name}`;
+    const ri = document.getElementById("resimg"); ri.src = prizes[data.index].img; ri.style.display = "block";
+    if (!document.getElementById("history").style.display.includes("none")) loadHistory();
+    tg.HapticFeedback && tg.HapticFeedback.notificationOccurred("success");
+    left = data.left; left > 0 ? startTimer() : (btn.disabled = false);
+  }, 5200);
+};
+
+const hist = document.getElementById("history"), t1 = document.getElementById("t1"), t2 = document.getElementById("t2");
+async function loadHistory() {
+  const { data } = await api("/api/history");
+  hist.innerHTML = data.items.length ? "" : "<div style='text-align:center;opacity:.6'>Поки що порожньо</div>";
+  data.items.forEach(it => {
+    const p = prizes.find(x => x.name === it.prize) || {};
+    const d = new Date(it.ts*1000).toLocaleString("uk-UA", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+    const row = document.createElement("div"); row.className = "row";
+    const img = document.createElement("img"); img.src = p.img || "";
+    const txt = document.createElement("div"); txt.textContent = it.prize;
+    const sm = document.createElement("small"); sm.textContent = d; txt.appendChild(sm);
+    row.append(img, txt); hist.appendChild(row);
+  });
+}
+t1.onclick = () => { t1.className = "on"; t2.className = ""; hist.style.display = "none"; };
+t2.onclick = () => { t2.className = "on"; t1.className = ""; hist.style.display = "block"; loadHistory(); };
+hist.style.display = "none";
+init();
+</script>
+</body>
+</html>
